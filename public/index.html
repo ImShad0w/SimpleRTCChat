@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title></title>
+  </head>
+  <body style="display:flex; border: 1px solid black">
+    <div class="wrapper">
+      <h1>Welcome to the RTC web chat!</h1> 
+      <h2>Users connected:</h2>
+      <div id="userList"></div>
+      <div id="confirm"></div>
+    </div>
+    <div style="width: 400px; height: auto; border: solid 2px red;"id="chat"></div>
+  </body>
+<script src="https://cdn.jsdelivr.net/npm/simple-peer@9.11.1/simplepeer.min.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  const socket = io();
+  let users = [];
+  const username = prompt("Quin es el teu nom?");
+  socket.emit("username", username);
+
+  let peerInit;
+  let peerNoInit;
+  let userToConnect;//Socket.id i'm going to use to send the signals
+
+  socket.on("updateUsers", data => {
+    users = data.filter(u => u.id != socket.id);//Exclude ourselves from the list
+    console.log(socket.id);
+    renderUserList();
+  });
+
+  socket.on("conReq", data => {
+    const answer = document.getElementById("confirm");
+    answer.innerHTML = "";
+    const qDiv = document.createElement("div");
+    const question = document.createElement("h1");
+    const confBtn = document.createElement("button");
+    const rejBtn = document.createElement("button");
+    question.innerText = `${data.username} wants to chat with you!`
+    confBtn.innerText = "Accept";
+    rejBtn.innerText = "Reject";
+    qDiv.appendChild(question);
+    qDiv.appendChild(confBtn);
+    qDiv.appendChild(rejBtn);
+    answer.appendChild(qDiv);
+
+    rejBtn.addEventListener("click", ()=>{ 
+      answer.innerHTML = ""; 
+    });
+    confBtn.addEventListener("click", ()=>{
+      socket.emit("confCon", data);
+    });
+  });
+
+  socket.on("startSignal", ()=>{
+    peerInit = new SimplePeer({ initiator: true, trickle: false });
+    //Note: I had to add the on connect before the signaling, so that both of the receiver
+    //and initiator gave me the same console.log and where indeed in the same data chanel
+    peerInit.on("connect", ()=>{
+      console.log("Connected as initiator!");
+      const answer2 = document.getElementById("confirm");
+      answer2.innerHTML = "";
+      renderChat();
+    });
+    peerInit.on("data", data => {
+      console.log("Message from peer:", data.toString());
+    });
+    peerInit.on("signal", data=>{
+      socket.emit("sendOffer", {
+        offer: data,
+        from: socket.id,//Used this so i can pass it with the receiver when answering, very convenient
+        to: userToConnect.id
+      });
+      console.log("Sending offer to", userToConnect);
+    });
+  });
+  socket.on("sendAnswer", data=>{
+    if(peerInit){
+      peerInit.signal(data.answer);//This is how the signal stuff works, i have to get the data, and then signal it
+      //Note: Since this is the initator getting the answer, once it signals it, the connection will be established
+    }
+  });
+
+  socket.on("sendOffer", data =>{
+    peerNoInit = new SimplePeer({ initiator: false, trickle: false });
+
+    peerNoInit.on("connect", ()=>{
+      console.log("Connected as receiver!");
+      renderChat();
+    });
+
+    peerNoInit.on("data", data => {
+      console.log("Message from peer:", data.toString());
+    });
+
+    peerNoInit.signal(data.offer);//Signal the offer and send the answer automatically
+
+    peerNoInit.on("signal", answer =>{
+      socket.emit("sendAnswer", {
+        answer: answer,
+        to: data.from,//As i said, very convenient
+        from: socket.id
+      });
+      console.log("Sending answer to", data.from);
+    });
+  });
+
+  function renderUserList(){
+    const list = document.getElementById("userList");
+    list.innerHTML = "";
+    users.forEach(user=>{
+      const name = document.createElement("p");
+      const conBtn = document.createElement("button");
+      const userDiv = document.createElement("div"); 
+      name.innerText = user.username;
+      conBtn.innerText = "Chatejar!";
+      userDiv.appendChild(name);
+      userDiv.appendChild(conBtn);
+      list.appendChild(userDiv);
+      conBtn.addEventListener("click", ()=>{
+        socket.emit("connectionRequest", user);
+        userToConnect = user;//Set the user i am connecting to
+      });
+    });
+  }
+
+  function renderChat(){
+    const chat = document.getElementById("chat");
+    chat.innerHTML = "";
+    const msgDiv = document.createElement("div");
+    const textI = document.createElement("input");
+    const sendBtn = document.createElement("button");
+    sendBtn.innerText = "Send";
+    sendBtn.addEventListener("click", ()=>{
+      const message = textI.value;
+      textI.value = "";
+      if(peerInit && peerInit.connected) peerInit.send(message);//If connected will allows us to send messages
+      if(peerNoInit && peerNoInit.connected) peerNoInit.send(message);
+    });
+    msgDiv.appendChild(textI);
+    msgDiv.appendChild(sendBtn);
+    chat.appendChild(msgDiv);
+    //If they are connected, will append the messages in the chat box, only the ones from the peer, not the ones we send.
+    if(peerInit && peerInit.connected) peerInit.on("data", data=>{
+      const msg = document.createElement("p");
+      msg.innerText = data.toString();
+      chat.appendChild(msg)
+    });
+    if(peerNoInit && peerNoInit.connected) peerNoInit.on("data", data=>{
+      const msg = document.createElement("p");
+      msg.innerText = data.toString();
+      chat.appendChild(msg)
+    });
+  }
+</script>
+
+</html>
